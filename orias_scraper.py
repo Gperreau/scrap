@@ -64,7 +64,7 @@ except ImportError:
     print("⚠  pip install aiohttp aiofiles")
 
 try:
-    from ddgs import DDGS
+    from duckduckgo_search import DDGS
     HAS_DDG = True
 except ImportError:
     HAS_DDG = False
@@ -838,22 +838,22 @@ def split_and_generate_workflow(
 
     # ── Workflow GitHub Actions ──────────────────────────────
     chunk_ids = list(range(1, n_actual + 1))
-    workflow  = f"""name: ORIAS Scraper — {n_actual} jobs parallèles
+    workflow  = f"""name: "ORIAS Scraper - {n_actual} jobs"
 
 on:
   workflow_dispatch:
     inputs:
       delay:
-        description: "Délai DDG en secondes (défaut {delay})"
+        description: "Delai DDG en secondes (defaut {delay})"
         default: "{delay}"
 
 jobs:
   scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6h max par job
+    timeout-minutes: 360
 
     strategy:
-      fail-fast: false      # un job qui échoue n'arrête pas les autres
+      fail-fast: false
       matrix:
         chunk: {chunk_ids}
 
@@ -861,84 +861,86 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python 3.11
+      - name: "Python 3.11"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Dépendances
+      - name: "Dependances"
         run: |
           pip install aiohttp aiofiles requests beautifulsoup4 lxml \\
                       openpyxl duckduckgo-search tqdm pandas
 
-      - name: Scraping bloc ${{{{ matrix.chunk }}}}/{n_actual}
+      - name: "Scraping bloc ${{{{ matrix.chunk }}}}/{n_actual}"
         env:
           SMTP_PASSWORD: ${{{{ secrets.SMTP_PASSWORD }}}}
+          EMAIL_TO: ${{{{ secrets.EMAIL_TO }}}}
+          EMAIL_FROM: ${{{{ secrets.EMAIL_FROM }}}}
         run: |
           python {script_name} run \\
-            --input        "{stem}_chunk${{{{ matrix.chunk }}}}.csv" \\
-            --output       "results_chunk${{{{ matrix.chunk }}}}_{ts}.xlsx" \\
-            --cache        "cache_chunk${{{{ matrix.chunk }}}}.json" \\
-            --delay        ${{{{ github.event.inputs.delay }}}} \\
-            --email-to     "${{{{ secrets.EMAIL_TO }}}}" \\
-            --email-from   "${{{{ secrets.EMAIL_FROM }}}}"
+            --input  "{stem}_chunk${{{{ matrix.chunk }}}}.csv" \\
+            --output "results_chunk${{{{ matrix.chunk }}}}_{ts}.xlsx" \\
+            --cache  "cache_chunk${{{{ matrix.chunk }}}}.json" \\
+            --delay  ${{{{ github.event.inputs.delay }}}} \\
+            --email-to   "${{{{ secrets.EMAIL_TO }}}}" \\
+            --email-from "${{{{ secrets.EMAIL_FROM }}}}"
 
-      - name: Upload artefact
+      - name: "Upload artefact"
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-chunk-${{{{ matrix.chunk }}}}-{ts}
+          name: "results-chunk-${{{{ matrix.chunk }}}}-{ts}"
           path: |
             results_chunk${{{{ matrix.chunk }}}}_{ts}.xlsx
             cache_chunk${{{{ matrix.chunk }}}}.json
           retention-days: 30
 
   merge:
-    needs: scraper       # attend que TOUS les jobs soient finis
+    needs: scraper
     runs-on: ubuntu-latest
-    if: always()         # fusionne même si certains jobs ont échoué
+    if: always()
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python
+      - name: "Python"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Dépendances
+      - name: "Dependances"
         run: pip install openpyxl pandas
 
-      - name: Télécharger tous les artefacts
+      - name: "Telecharger les artefacts"
         uses: actions/download-artifact@v4
         with:
           path: artefacts/
 
-      - name: Fusion des résultats
+      - name: "Fusion des resultats"
         run: |
           python {script_name} merge \\
             --pattern "artefacts/**/results_chunk*_{ts}.xlsx" \\
             --output  "orias_resultats_final_{ts}.xlsx"
 
-      - name: Upload résultat final
+      - name: "Upload resultat final"
         uses: actions/upload-artifact@v4
         with:
-          name: orias-final-{ts}
+          name: "orias-final-{ts}"
           path: orias_resultats_final_{ts}.xlsx
           retention-days: 90
 
-      - name: Envoi email (si configuré)
+      - name: "Envoi email"
         if: "${{{{ secrets.EMAIL_TO != '' }}}}"
         env:
           SMTP_PASSWORD: ${{{{ secrets.SMTP_PASSWORD }}}}
         run: |
           python {script_name} notify \\
-            --result  "orias_resultats_final_{ts}.xlsx" \\
-            --email-to    "${{{{ secrets.EMAIL_TO }}}}" \\
-            --email-from  "${{{{ secrets.EMAIL_FROM }}}}"
+            --result     "orias_resultats_final_{ts}.xlsx" \\
+            --email-to   "${{{{ secrets.EMAIL_TO }}}}" \\
+            --email-from "${{{{ secrets.EMAIL_FROM }}}}"
 """
 
     wf_dir  = Path(".github/workflows")
