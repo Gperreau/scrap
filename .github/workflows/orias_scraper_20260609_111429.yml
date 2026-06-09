@@ -3,8 +3,12 @@ name: "ORIAS Scraper - 9 jobs"
 on:
   workflow_dispatch:
     inputs:
+      input_file:
+        description: "Fichier source dans le repo (ex: orias_coa_filtre.csv)"
+        required: true
+        default: "orias_coa.xlsx"
       delay:
-        description: "Delai DDG en secondes (defaut 1.5)"
+        description: "Delai DDG en secondes"
         default: "1.5"
 
 jobs:
@@ -25,7 +29,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: "Dependances"
         run: |
@@ -39,20 +42,22 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
         run: |
           python orias_scraper.py run \
-            --input  "orias_coa_chunk${{ matrix.chunk }}.csv" \
-            --output "results_chunk${{ matrix.chunk }}_20260609_105723.xlsx" \
-            --cache  "cache_chunk${{ matrix.chunk }}.json" \
-            --delay  ${{ github.event.inputs.delay }} \
-            --email-to   "${{ secrets.EMAIL_TO }}" \
-            --email-from "${{ secrets.EMAIL_FROM }}"
+            --input        "${{ github.event.inputs.input_file }}" \
+            --output       "results_chunk${{ matrix.chunk }}_20260609_111429.xlsx" \
+            --cache        "cache_chunk${{ matrix.chunk }}.json" \
+            --chunk-id     ${{ matrix.chunk }} \
+            --total-chunks 9 \
+            --delay        ${{ github.event.inputs.delay }} \
+            --email-to     "${{ secrets.EMAIL_TO }}" \
+            --email-from   "${{ secrets.EMAIL_FROM }}"
 
       - name: "Upload artefact"
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: "results-chunk-${{ matrix.chunk }}-20260609_105723"
+          name: "results-chunk-${{ matrix.chunk }}-20260609_111429"
           path: |
-            results_chunk${{ matrix.chunk }}_20260609_105723.xlsx
+            results_chunk${{ matrix.chunk }}_20260609_111429.xlsx
             cache_chunk${{ matrix.chunk }}.json
           retention-days: 30
 
@@ -60,6 +65,10 @@ jobs:
     needs: scraper
     runs-on: ubuntu-latest
     if: always()
+    env:
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -69,7 +78,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: "Dependances"
         run: pip install openpyxl pandas
@@ -82,21 +90,19 @@ jobs:
       - name: "Fusion des resultats"
         run: |
           python orias_scraper.py merge \
-            --pattern "artefacts/**/results_chunk*_20260609_105723.xlsx" \
-            --output  "orias_resultats_final_20260609_105723.xlsx"
+            --pattern "artefacts/**/results_chunk*_20260609_111429.xlsx" \
+            --output  "orias_resultats_final_20260609_111429.xlsx"
 
       - name: "Upload resultat final"
         uses: actions/upload-artifact@v4
         with:
-          name: "orias-final-20260609_105723"
-          path: orias_resultats_final_20260609_105723.xlsx
+          name: "orias-final-20260609_111429"
+          path: orias_resultats_final_20260609_111429.xlsx
           retention-days: 90
 
       - name: "Envoi email"
-        env:
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: |
           python orias_scraper.py notify \
-            --result     "orias_resultats_final_20260609_105723.xlsx" \
+            --result     "orias_resultats_final_20260609_111429.xlsx" \
             --email-to   "${{ secrets.EMAIL_TO }}" \
             --email-from "${{ secrets.EMAIL_FROM }}"

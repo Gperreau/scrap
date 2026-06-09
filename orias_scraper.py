@@ -843,8 +843,12 @@ def split_and_generate_workflow(
 on:
   workflow_dispatch:
     inputs:
+      input_file:
+        description: "Fichier source dans le repo (ex: orias_coa_filtre.csv)"
+        required: true
+        default: "{Path(input_path).name}"
       delay:
-        description: "Delai DDG en secondes (defaut {delay})"
+        description: "Delai DDG en secondes"
         default: "{delay}"
 
 jobs:
@@ -865,7 +869,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: "Dependances"
         run: |
@@ -879,12 +882,14 @@ jobs:
           EMAIL_FROM: ${{{{ secrets.EMAIL_FROM }}}}
         run: |
           python {script_name} run \\
-            --input  "{stem}_chunk${{{{ matrix.chunk }}}}.csv" \\
-            --output "results_chunk${{{{ matrix.chunk }}}}_{ts}.xlsx" \\
-            --cache  "cache_chunk${{{{ matrix.chunk }}}}.json" \\
-            --delay  ${{{{ github.event.inputs.delay }}}} \\
-            --email-to   "${{{{ secrets.EMAIL_TO }}}}" \\
-            --email-from "${{{{ secrets.EMAIL_FROM }}}}"
+            --input        "${{{{ github.event.inputs.input_file }}}}" \\
+            --output       "results_chunk${{{{ matrix.chunk }}}}_{ts}.xlsx" \\
+            --cache        "cache_chunk${{{{ matrix.chunk }}}}.json" \\
+            --chunk-id     ${{{{ matrix.chunk }}}} \\
+            --total-chunks {n_actual} \\
+            --delay        ${{{{ github.event.inputs.delay }}}} \\
+            --email-to     "${{{{ secrets.EMAIL_TO }}}}" \\
+            --email-from   "${{{{ secrets.EMAIL_FROM }}}}"
 
       - name: "Upload artefact"
         uses: actions/upload-artifact@v4
@@ -900,6 +905,10 @@ jobs:
     needs: scraper
     runs-on: ubuntu-latest
     if: always()
+    env:
+      EMAIL_TO: ${{{{ secrets.EMAIL_TO }}}}
+      EMAIL_FROM: ${{{{ secrets.EMAIL_FROM }}}}
+      SMTP_PASSWORD: ${{{{ secrets.SMTP_PASSWORD }}}}
 
     steps:
       - name: Checkout
@@ -909,7 +918,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: "Dependances"
         run: pip install openpyxl pandas
@@ -933,9 +941,6 @@ jobs:
           retention-days: 90
 
       - name: "Envoi email"
-        if: "${{{{ secrets.EMAIL_TO != '' }}}}"
-        env:
-          SMTP_PASSWORD: ${{{{ secrets.SMTP_PASSWORD }}}}
         run: |
           python {script_name} notify \\
             --result     "orias_resultats_final_{ts}.xlsx" \\
