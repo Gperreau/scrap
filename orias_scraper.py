@@ -931,7 +931,7 @@ jobs:
           retention-days: 90
 
       - name: Envoi email (si configuré)
-        if: ${{{{ secrets.EMAIL_TO != '' }}}}
+        if: "${{{{ secrets.EMAIL_TO != '' }}}}"
         env:
           SMTP_PASSWORD: ${{{{ secrets.SMTP_PASSWORD }}}}
         run: |
