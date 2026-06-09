@@ -64,7 +64,7 @@ except ImportError:
     print("⚠  pip install aiohttp aiofiles")
 
 try:
-    from ddgs import DDGS
+    from duckduckgo_search import DDGS
     HAS_DDG = True
 except ImportError:
     HAS_DDG = False
@@ -105,51 +105,11 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-EXCLUDED_ALWAYS = [
-    # Annuaires purs (pas d'info produit)
-    "societe.com", "verif.com", "infogreffe.fr", "pappers.fr",
-    "kompass.com", "mappy.com", "annuaire-entreprises.data.gouv.fr",
+EXCLUDED_DOMAINS = [
+    "linkedin.com", "societe.com", "verif.com", "infogreffe.fr",
+    "pappers.fr", "kompass.com", "facebook.com", "twitter.com",
+    "youtube.com", "pagesjaunes.fr", "mappy.com", "annuaire-entreprises.data.gouv.fr",
     "score3.fr", "hoodspot.fr", "manageo.fr", "corporama.com",
-    "societeinfo.com", "infonet.fr", "rubypayeur.com",
-    "datainfogreffe.fr", "bottin.fr", "cityscan.fr", "annuaire.com",
-    # Réseaux sociaux (sauf LinkedIn géré séparément)
-    "facebook.com", "twitter.com", "instagram.com", "tiktok.com",
-    "youtube.com", "pinterest.com", "snapchat.com", "whatsapp.com",
-    # Encyclopédies / médias généralistes
-    "wikipedia.org", "wikimedia.org", "wikidata.org",
-    "netflix.com", "amazon.com", "amazon.fr",
-    "lemonde.fr", "lefigaro.fr", "liberation.fr", "lexpress.fr",
-    "bfmtv.com", "tf1.fr", "france2.fr", "france3.fr",
-    # Finance généraliste
-    "yahoo.com", "yahoo.fr", "finance.yahoo.com",
-    "boursorama.com", "investing.com", "tradingview.com",
-    "zonebourse.com", "boursier.com", "abcbourse.com",
-    "marketwatch.com", "bloomberg.com", "reuters.com",
-    # Moteurs / portails
-    "google.com", "google.fr", "bing.com", "duckduckgo.com",
-    "qwant.com", "ecosia.org",
-    # E-commerce / divers non pertinents
-    "leboncoin.fr", "ebay.fr", "ebay.com",
-    "laposte.fr", "laposte.net",
-    "seloger.com", "logic-immo.com",
-]
-
-# Sources secondaires : utiles pour enrichir la détection mais
-# ne doivent pas être la source principale (site officiel prioritaire)
-SECONDARY_SOURCES = {
-    "linkedin.com":   "LinkedIn",
-    "pagesjaunes.fr": "PagesJaunes",
-}
-
-# Pour compatibilité avec le reste du code
-EXCLUDED_DOMAINS = EXCLUDED_ALWAYS
-
-# Mots-clés de pertinence assurance
-INSURANCE_RELEVANCE_KW = [
-    "assurance", "courtier", "courtage", "mutuelle", "prévoyance",
-    "prevoyance", "patrimoine", "retraite", "épargne", "epargne",
-    "sinistre", "garantie", "contrat", "orias", "iard",
-    "protection sociale", "santé", "sante",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -304,7 +264,7 @@ def _sirene_sync(siren: str) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 async def scrape_url_async(session: aiohttp.ClientSession, url: str, sem: asyncio.Semaphore) -> str:
-    """Scrappe une URL (async) avec extraction meta/JSON-LD pour pages JS."""
+    """Scrappe une URL et retourne le texte visible (lowercase)."""
     try:
         async with sem:
             async with session.get(
@@ -315,32 +275,10 @@ async def scrape_url_async(session: aiohttp.ClientSession, url: str, sem: asynci
                 if r.status != 200:
                     return ""
                 html = await r.text(errors="replace")
-
         soup = BeautifulSoup(html, "lxml")
-
-        # Méta description
-        meta_desc = ""
-        m = soup.find("meta", attrs={"name": "description"})
-        if m:
-            meta_desc = m.get("content", "")
-        og = soup.find("meta", attrs={"property": "og:description"})
-        if og:
-            meta_desc += " " + og.get("content", "")
-
-        title    = soup.title.get_text(strip=True) if soup.title else ""
-        headings = " ".join(t.get_text(strip=True) for t in soup.find_all(["h1","h2","h3"]))
-        jsonld   = " ".join(s.get_text() for s in soup.find_all("script", type="application/ld+json"))
-
         for tag in soup(["script", "style", "nav", "footer", "head", "noscript"]):
             tag.decompose()
-        full_text = soup.get_text(separator=" ", strip=True)
-
-        combined = " ".join(filter(None, [title, meta_desc, headings, jsonld, full_text])).lower()
-
-        if not _is_insurance_relevant(url, combined):
-            return ""
-
-        return combined
+        return soup.get_text(separator=" ", strip=True).lower()
     except Exception:
         return ""
 
@@ -398,207 +336,40 @@ def ddg_search(query: str, max_results: int = 8, delay: float = DDG_DELAY) -> li
             return []
 
 
-def _is_excluded(url: str) -> bool:
-    """True si le domaine est dans la liste des domaines toujours exclus."""
-    return any(e in url for e in EXCLUDED_ALWAYS)
-
-
-def _is_secondary(url: str) -> str | None:
-    """Retourne le label de la source secondaire si l'URL en est une, sinon None."""
-    for domain, label in SECONDARY_SOURCES.items():
-        if domain in url:
-            return label
-    return None
-
-
-def _is_insurance_relevant(url: str, snippet: str) -> bool:
+def find_url_ddg(nom: str, siren: str, delay: float = DDG_DELAY) -> tuple[str, str]:
     """
-    Vérifie qu'un résultat DDG est pertinent pour un courtier d'assurance.
-    On accepte si l'URL ou le snippet contient au moins un mot-clé assurance.
+    Cherche l'URL officielle via DDG.
+    Essaie dans l'ordre :
+      1. SIREN brut (souvent très précis)
+      2. Nom entre guillemets + "courtier assurance"
+    Retourne (url, méthode).
     """
-    combined = (url + " " + snippet).lower()
-    return any(kw in combined for kw in INSURANCE_RELEVANCE_KW)
-
-
-def find_url_ddg(
-    nom: str, siren: str, delay: float = DDG_DELAY
-) -> tuple[str, str, dict]:
-    """
-    Cherche l'URL officielle du cabinet + snippets des sources secondaires.
-
-    Retourne (url_principale, méthode, sources_secondaires)
-    où sources_secondaires = {"LinkedIn": "texte...", "PagesJaunes": "texte..."}
-
-    Stratégie pour l'URL principale (sources secondaires exclues) :
-      1. Nom complet + "courtier assurance"
-      2. Nom complet + "assurance"
-      3. Nom simplifié + "assurance courtier"
-      4. SIREN + nom (dernier recours)
-
-    Stratégie pour les sources secondaires (recherches dédiées) :
-      - LinkedIn : site:linkedin.com/company + nom
-      - PagesJaunes : site:pagesjaunes.fr + nom
-    """
-    secondary: dict[str, str] = {}
-
-    if not nom and not siren:
-        return "", "Non trouvé", secondary
-
-    # Nettoyage du nom
-    nom_clean = re.sub(
-        r'\b(s\.?a\.?s\.?|s\.?a\.?r\.?l\.?|s\.?a\.?|eurl|sci|scp|snc|'
-        r'société|cabinet|agence|sarl|sas|sa)\b',
-        '', nom, flags=re.IGNORECASE
-    ).strip(" -.,")
-
-    # ── Recherche de l'URL principale (hors sources secondaires) ──────
-    primary_url, primary_method = "", ""
-
-    queries_primary = []
+    queries = []
+    if siren:
+        queries.append((f'"{siren}" assurance courtier', "DDG SIREN"))
     if nom:
-        queries_primary += [
-            (f'"{nom}" courtier assurance',      f'DDG: "{nom}" + courtier'),
-            (f'"{nom}" assurance site:*.fr',     f'DDG: "{nom}" + .fr'),
-            (f'"{nom}" assurance',               f'DDG: "{nom}" + assurance'),
-        ]
-    if nom_clean and nom_clean.lower() != nom.lower():
-        queries_primary += [
-            (f'"{nom_clean}" courtier assurance', f'DDG: "{nom_clean}" + courtier'),
-            (f'"{nom_clean}" assurance',          f'DDG: "{nom_clean}" + assurance'),
-        ]
-    if siren and nom:
-        queries_primary.append((f'{siren} "{nom_clean or nom}" assurance', f'DDG: SIREN+nom'))
-    elif siren:
-        queries_primary.append((f'{siren} courtier assurance france', f'DDG: SIREN'))
+        queries.append((f'"{nom}" courtier assurance', "DDG nom"))
+        queries.append((f'{nom} assurance site officiel', "DDG générique"))
 
-    for query, method in queries_primary:
-        results = ddg_search(query, max_results=8, delay=delay)
+    for query, method in queries:
+        results = ddg_search(query, max_results=6, delay=delay)
         for r in results:
-            url     = r.get("href", "")
-            snippet = r.get("body", "")
-            if not url or _is_excluded(url):
-                continue
-            if _is_secondary(url):
-                # Récupérer le snippet de la source secondaire au passage
-                label = _is_secondary(url)
-                if label and label not in secondary:
-                    secondary[label] = snippet
-                continue   # ne pas retenir comme URL principale
-            if _is_insurance_relevant(url, snippet):
-                primary_url, primary_method = url, method
-                break
-        if primary_url:
-            break
-
-    # ── Sources secondaires : recherches dédiées ──────────────────────
-    # LinkedIn
-    if "LinkedIn" not in secondary:
-        li_res = ddg_search(
-            f'site:linkedin.com/company "{nom_clean or nom}" assurance',
-            max_results=4, delay=delay,
-        )
-        for r in li_res:
-            if "linkedin.com" in r.get("href", ""):
-                secondary["LinkedIn"] = r.get("body", "")
-                break
-
-    # PagesJaunes
-    if "PagesJaunes" not in secondary:
-        pj_res = ddg_search(
-            f'site:pagesjaunes.fr "{nom_clean or nom}" assurance',
-            max_results=4, delay=delay,
-        )
-        for r in pj_res:
-            if "pagesjaunes.fr" in r.get("href", ""):
-                secondary["PagesJaunes"] = r.get("body", "")
-                break
-        # Scraping de la fiche PJ si URL trouvée (plus de contenu)
-        if "PagesJaunes" not in secondary and pj_res:
-            pj_url = next((r.get("href","") for r in pj_res if "pagesjaunes.fr" in r.get("href","")), "")
-            if pj_url:
-                pj_text = scrape_url_sync(pj_url) or pj_res[0].get("body","")
-                if pj_text:
-                    secondary["PagesJaunes"] = pj_text
-
-    return primary_url, primary_method, secondary
+            url = r.get("href", "")
+            if url and not any(e in url for e in EXCLUDED_DOMAINS):
+                return url, method
+    return "", "Non trouvé"
 
 
 def scrape_url_sync(url: str) -> str:
-    """
-    Scrappe une URL et retourne le texte visible.
-    Pour les pages à fort rendu JS (contenu court après parsing) :
-      - extrait la méta-description (toujours server-side)
-      - extrait les données JSON-LD (schéma structuré, server-side)
-      - extrait les titres h1/h2/h3
-      - essaie les sous-pages /nos-offres, /assurances, /produits
-    Retourne "" si la page n'est pas pertinente (assurance).
-    """
+    """Version synchrone pour le fallback sans aiohttp."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT, allow_redirects=True)
         if r.status_code != 200:
             return ""
-
         soup = BeautifulSoup(r.content, "lxml")
-
-        # ── Méta description (server-side, toujours présent) ──
-        meta_desc = ""
-        meta_tag = soup.find("meta", attrs={"name": "description"})
-        if meta_tag:
-            meta_desc = meta_tag.get("content", "")
-        og_desc = soup.find("meta", attrs={"property": "og:description"})
-        if og_desc:
-            meta_desc += " " + og_desc.get("content", "")
-
-        # ── Titre de la page ──────────────────────────────────
-        title = soup.title.get_text(strip=True) if soup.title else ""
-
-        # ── JSON-LD (données structurées server-side) ─────────
-        jsonld_text = ""
-        for script in soup.find_all("script", type="application/ld+json"):
-            jsonld_text += " " + script.get_text()
-
-        # ── Titres h1/h2/h3 (souvent server-side même sur JS) ─
-        headings = " ".join(
-            t.get_text(strip=True)
-            for t in soup.find_all(["h1", "h2", "h3"])
-        )
-
-        # ── Texte complet (suppression scripts/styles) ────────
         for tag in soup(["script", "style", "nav", "footer", "head", "noscript"]):
             tag.decompose()
-        full_text = soup.get_text(separator=" ", strip=True)
-
-        # ── Agrégation ────────────────────────────────────────
-        combined = " ".join(filter(None, [
-            title, meta_desc, headings, jsonld_text, full_text
-        ])).lower()
-
-        # ── Validation : est-ce vraiment une page d'assurance ? ─
-        if not _is_insurance_relevant(url, combined):
-            return ""
-
-        # ── Si contenu très court (page JS), essayer sous-pages ─
-        if len(full_text) < 500:
-            extra = ""
-            for suffix in ["/nos-offres", "/produits", "/assurances",
-                           "/services", "/solutions", "/garanties"]:
-                try:
-                    r2 = requests.get(url.rstrip("/") + suffix,
-                                      headers=HEADERS, timeout=8,
-                                      allow_redirects=True)
-                    if r2.status_code == 200:
-                        s2 = BeautifulSoup(r2.content, "lxml")
-                        for t in s2(["script","style","nav","footer","head"]):
-                            t.decompose()
-                        extra = s2.get_text(separator=" ", strip=True).lower()
-                        if len(extra) > len(full_text):
-                            combined += " " + extra
-                            break
-                except Exception:
-                    pass
-
-        return combined
-
+        return soup.get_text(separator=" ", strip=True).lower()
     except Exception:
         return ""
 
@@ -611,80 +382,56 @@ def build_result(
     orias: str, nom: str, siren: str,
     page_text: str, url: str, method: str,
     sirene_data: dict,
-    secondary: dict | None = None,
 ) -> dict:
-    """Construit le dict résultat. secondary = {"LinkedIn": "...", "PagesJaunes": "..."}"""
-    from urllib.parse import urlparse
-    secondary = secondary or {}
-
-    domain = ""
-    if url:
-        try:
-            domain = urlparse(url).netloc.replace("www.", "")
-        except Exception:
-            domain = url[:40]
-
-    # Texte agrégé : site officiel + sources secondaires
-    all_texts = {
-        domain or "site": page_text,
-        **{k: v for k, v in secondary.items() if v},
-    }
-    # SIRENE comme contexte supplémentaire
-    sirene_ctx = (sirene_data.get("nom", "") + " " + sirene_data.get("ape_label", "")).lower()
-
-    combined = " ".join(filter(None, list(all_texts.values()) + [sirene_ctx]))
+    """Construit le dict résultat à partir des textes collectés."""
+    combined = (page_text + " " + sirene_data.get("nom", "") + " " +
+                sirene_data.get("ape_label", "")).lower()
 
     sante = detect_sante(combined)
     perin  = detect_perin(combined)
 
-    # Identifier quelle source a contribué à chaque produit
     contrib = []
-    for src_name, src_text in all_texts.items():
-        if not src_text:
-            continue
-        s = detect_sante(src_text)
-        p = detect_perin(src_text)
-        if s:
-            contrib.append(f"{src_name} → Santé individuelle")
-        if p:
-            contrib.append(f"{src_name} → PERIN")
+    if page_text:
+        if detect_sante(page_text):
+            contrib.append(f"Page web ({method})")
+        if detect_perin(page_text):
+            if not contrib or "PERIN" not in str(contrib):
+                contrib.append(f"Page web PERIN ({method})")
+    if sirene_data.get("ape_label"):
+        ape_text = sirene_data["ape_label"].lower()
+        if detect_sante(ape_text):
+            contrib.append("API SIRENE (Santé)")
+        if detect_perin(ape_text):
+            contrib.append("API SIRENE (PERIN)")
 
-    # Score
     score, detail = 0, []
     if url:
-        score += 10; detail.append(f"{domain} (+10)")
+        score += 10; detail.append("URL trouvée (+10)")
     if page_text and len(page_text) > 1000:
         score += 30; detail.append("Page riche (+30)")
     elif page_text:
         score += 15; detail.append("Page courte (+15)")
-    for src in secondary:
-        score += 5; detail.append(f"{src} (+5)")
     if sirene_data.get("nom"):
         score += 10; detail.append("SIRENE (+10)")
     if sante or perin:
         score += 20; detail.append("Produit détecté (+20)")
-    if "générique" in method:
+    if "DDG générique" in method:
         score = max(score - 5, 0)
 
-    # Label sources utilisées pour affichage
-    sources_used = ([domain] if domain else []) + list(secondary.keys())
-
     return {
-        "numero_orias":       orias,
-        "nom":                nom or sirene_data.get("nom", ""),
-        "siren":              siren,
-        "ape":                sirene_data.get("ape", ""),
-        "ville":              sirene_data.get("ville", ""),
+        "numero_orias":      orias,
+        "nom":               nom or sirene_data.get("nom", ""),
+        "siren":             siren,
+        "ape":               sirene_data.get("ape", ""),
+        "ville":             sirene_data.get("ville", ""),
         "sante_individuelle": sante,
-        "perin":              perin,
-        "score":              min(score, 100),
-        "niveau":             "Élevé ✅" if score >= 70 else "Moyen ⚠️" if score >= 40 else "Faible ❌",
-        "url":                url,
-        "domaine":            domain,
-        "methode":            method,
-        "sources_consultees": " | ".join(sources_used) if sources_used else "—",
-        "sources":            " | ".join(contrib) if contrib else "—",
-        "detail_score":       " | ".join(detail),
+        "perin":             perin,
+        "score":             min(score, 100),
+        "niveau":            "Élevé ✅" if score >= 70 else "Moyen ⚠️" if score >= 40 else "Faible ❌",
+        "url":               url,
+        "methode":           method,
+        "sources":           " | ".join(contrib) if contrib else "—",
+        "detail_score":      " | ".join(detail),
     }
 
 
@@ -738,7 +485,7 @@ async def process_chunk(
     for r, sd in with_url:
         text   = page_texts.get(r["orias"], "")
         result = build_result(r["orias"], r.get("nom",""), r["siren"],
-                              text, sd["url"], "SIRENE direct", sd, {})
+                              text, sd["url"], "SIRENE direct", sd)
         cache[r["orias"]] = result
         results.append(result)
 
@@ -751,20 +498,20 @@ async def process_chunk(
         def ddg_task(item):
             r, sd = item
             nom   = sd.get("nom") or r.get("nom", "")
-            url, method, secondary = find_url_ddg(nom, r["siren"], delay)
+            url, method = find_url_ddg(nom, r["siren"], delay)
 
-            # Scraper le site officiel si URL trouvée
+            # Scraper si URL trouvée
             text = ""
             if url:
                 text = scrape_url_sync(url)
                 if len(text) < 300:
+                    # Essayer sous-pages
                     for suf in ["/nos-offres", "/produits", "/services"]:
                         t2 = scrape_url_sync(url.rstrip("/") + suf)
                         if len(t2) > len(text):
                             text = t2
 
-            result = build_result(r["orias"], nom, r["siren"],
-                                  text, url, method, sd, secondary)
+            result = build_result(r["orias"], nom, r["siren"], text, url, method, sd)
             counter[0] += 1
             if bar:
                 bar.update(1)
@@ -978,11 +725,9 @@ def build_excel(results: list[dict], path: str, chunk_id: int = 0, total_chunks:
     headers = [
         "N° ORIAS", "SIREN", "Raison Sociale", "Ville / APE",
         "Santé Individuelle", "PERIN",
-        "Score", "Niveau", "URL",
-        "Sources consultées",
-        "Sources ayant contribué",
+        "Score", "Niveau", "URL", "Sources / Méthode",
     ]
-    widths = [14, 12, 32, 24, 18, 14, 10, 14, 50, 35, 55]
+    widths = [14, 12, 32, 24, 18, 14, 10, 14, 50, 55]
 
     for ci, (h, w) in enumerate(zip(headers, widths), 1):
         c = ws.cell(row=3, column=ci, value=h)
@@ -1015,8 +760,7 @@ def build_excel(results: list[dict], path: str, chunk_id: int = 0, total_chunks:
             score,
             e.get("niveau", ""),
             e.get("url", ""),
-            e.get("sources_consultees", "—"),
-            e.get("sources", "—"),
+            f"{e.get('sources','')} | {e.get('methode','')}".strip(" |"),
         ]
 
         for ci, val in enumerate(vals, 1):
@@ -1040,14 +784,8 @@ def build_excel(results: list[dict], path: str, chunk_id: int = 0, total_chunks:
                 c.font = Font(name="Arial", size=8, color="1155CC" if val else "999999")
                 c.fill = PatternFill("solid", fgColor=bg)
                 c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-            elif ci == 10:  # Sources consultées
-                c.font = Font(name="Arial", size=8, color="555555")
-                c.fill = PatternFill("solid", fgColor=bg)
-                c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-            else:           # Sources ayant contribué
-                has = val != "—" and val
-                c.font = Font(name="Arial", size=8, bold=bool(has), color="1A7A45" if has else "888888")
-                c.fill = PatternFill("solid", fgColor="D5F5E3" if has else bg)
+            else:
+                c.font = Font(name="Arial", size=8, color="555555"); c.fill = PatternFill("solid", fgColor=bg)
                 c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         ws.row_dimensions[ri].height = 18
 
@@ -1182,9 +920,7 @@ jobs:
           python-version: "3.11"
 
       - name: "Dependances"
-        run: |
-          pip install aiohttp aiofiles requests beautifulsoup4 lxml \\
-                      openpyxl duckduckgo-search tqdm pandas
+        run: pip install openpyxl pandas
 
       - name: "Telecharger les artefacts"
         uses: actions/download-artifact@v4

@@ -1,4 +1,4 @@
-name: "ORIAS Scraper - 9 jobs"
+name: "ORIAS Scraper - 10 jobs"
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chunk: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        chunk: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
     steps:
       - name: Checkout
@@ -35,7 +35,7 @@ jobs:
           pip install aiohttp aiofiles requests beautifulsoup4 lxml \
                       openpyxl duckduckgo-search tqdm pandas
 
-      - name: "Scraping bloc ${{ matrix.chunk }}/9"
+      - name: "Scraping bloc ${{ matrix.chunk }}/10"
         env:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
@@ -43,10 +43,10 @@ jobs:
         run: |
           python orias_scraper.py run \
             --input        "${{ github.event.inputs.input_file }}" \
-            --output       "results_chunk${{ matrix.chunk }}_20260609_111429.xlsx" \
+            --output       "results_chunk${{ matrix.chunk }}_20260609_223758.xlsx" \
             --cache        "cache_chunk${{ matrix.chunk }}.json" \
             --chunk-id     ${{ matrix.chunk }} \
-            --total-chunks 9 \
+            --total-chunks 10 \
             --delay        ${{ github.event.inputs.delay }} \
             --email-to     "${{ secrets.EMAIL_TO }}" \
             --email-from   "${{ secrets.EMAIL_FROM }}"
@@ -55,9 +55,9 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: "results-chunk-${{ matrix.chunk }}-20260609_111429"
+          name: "results-chunk-${{ matrix.chunk }}-20260609_223758"
           path: |
-            results_chunk${{ matrix.chunk }}_20260609_111429.xlsx
+            results_chunk${{ matrix.chunk }}_20260609_223758.xlsx
             cache_chunk${{ matrix.chunk }}.json
           retention-days: 30
 
@@ -80,7 +80,9 @@ jobs:
           python-version: "3.11"
 
       - name: "Dependances"
-        run: pip install openpyxl pandas
+        run: |
+          pip install aiohttp aiofiles requests beautifulsoup4 lxml \
+                      openpyxl duckduckgo-search tqdm pandas
 
       - name: "Telecharger les artefacts"
         uses: actions/download-artifact@v4
@@ -90,19 +92,19 @@ jobs:
       - name: "Fusion des resultats"
         run: |
           python orias_scraper.py merge \
-            --pattern "artefacts/**/results_chunk*_20260609_111429.xlsx" \
-            --output  "orias_resultats_final_20260609_111429.xlsx"
+            --pattern "artefacts/**/results_chunk*_20260609_223758.xlsx" \
+            --output  "orias_resultats_final_20260609_223758.xlsx"
 
       - name: "Upload resultat final"
         uses: actions/upload-artifact@v4
         with:
-          name: "orias-final-20260609_111429"
-          path: orias_resultats_final_20260609_111429.xlsx
+          name: "orias-final-20260609_223758"
+          path: orias_resultats_final_20260609_223758.xlsx
           retention-days: 90
 
       - name: "Envoi email"
         run: |
           python orias_scraper.py notify \
-            --result     "orias_resultats_final_20260609_111429.xlsx" \
+            --result     "orias_resultats_final_20260609_223758.xlsx" \
             --email-to   "${{ secrets.EMAIL_TO }}" \
             --email-from "${{ secrets.EMAIL_FROM }}"
